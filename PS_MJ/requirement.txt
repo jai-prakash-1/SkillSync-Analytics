@@ -1,7 +1,8 @@
-Streamlit
-Pandas
-Sentence-transformers
-Scikit-learn
+streamlit
+pandas
+sentence-transformers
+scikit-learn
 PyPDF2
-Python-docx
-Requests
+python-docx
+groq
+requests
