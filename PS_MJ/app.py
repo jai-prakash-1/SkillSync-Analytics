@@ -39,7 +39,11 @@ local_css("app.css")
 @st.cache_resource
 def startup_engine():
     model = SentenceTransformer('all-MiniLM-L6-v2')
-    all_files = glob.glob("*.csv")
+    
+    # Tactical Path Fix: Look in current folder AND parent folder for CSVs
+    # This prevents the "No objects to concatenate" error on Streamlit Cloud
+    all_files = glob.glob("*.csv") + glob.glob("../*.csv")
+    
     master_list = []
     for filename in all_files:
         if "chatbot_qa" in filename: continue
@@ -48,12 +52,19 @@ def startup_engine():
             df.columns = [f"col_{i}" for i in range(len(df.columns))]
             df = df.rename(columns={"col_1": "Role", "col_2": "Job_Description", "col_3": "Skills", "col_4": "Projects"})
             df = df.fillna("Not Specified").astype(str)
-            df['Industry'] = filename.replace(".csv", "")
+            df['Industry'] = os.path.basename(filename).replace(".csv", "")
             master_list.append(df[["Role", "Job_Description", "Skills", "Projects", "Industry"]])
         except: continue
     
+    # Error Handling for empty master_list
+    if not master_list:
+        st.error("CRITICAL: No industry CSV files found. Please ensure CSVs are in the same folder as app.py.")
+        st.stop()
+        
     try:
-        qa_db = pd.read_csv('chatbot_qa_dataset.csv').fillna("").astype(str)
+        # Look for QA DB in current and parent folder
+        qa_path = "chatbot_qa_dataset.csv" if os.path.exists("chatbot_qa_dataset.csv") else "../chatbot_qa_dataset.csv"
+        qa_db = pd.read_csv(qa_path).fillna("").astype(str)
         qa_embeddings = model.encode(qa_db['question'].tolist(), convert_to_tensor=True)
     except:
         qa_db, qa_embeddings = pd.DataFrame(), None
@@ -104,10 +115,12 @@ with c2: resume_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
 
 if st.button("RUN ANALYSIS"):
     if resume_file and target_job:
+        # Reset streaming flags for new analysis
+        if "audit_streamed" in st.session_state: del st.session_state.audit_streamed
+        if "roadmap_streamed" in st.session_state: del st.session_state.roadmap_streamed
+        
         with st.spinner("Analyzing Professional Vectors..."):
             res_raw = extract_text(resume_file)
-            
-            # 1. Matching Logic
             master_db['Fingerprint'] = master_db['Role'] + " " + master_db['Skills']
             kb_embeds = semantic_model.encode(master_db['Fingerprint'].tolist(), convert_to_tensor=True)
             res_embed = semantic_model.encode(res_raw, convert_to_tensor=True)
@@ -119,12 +132,10 @@ if st.button("RUN ANALYSIS"):
                 match = master_db.iloc[scores.argmax().item()]
                 tfidf = TfidfVectorizer().fit_transform([re.sub(r'[^a-z0-9\s]', '', res_raw.lower()), re.sub(r'[^a-z0-9\s]', '', target_job.lower())])
                 
-                # 2. Store findings in Session State
                 st.session_state.match_data = match
                 st.session_state.ats_score = (cosine_similarity(tfidf)[0][1] * 100)
                 st.session_state.status = "CRITICAL_LOW" if st.session_state.ats_score < 40 else "OPTIMIZED"
                 
-                # 3. Generate static content for persistent display
                 st.session_state.audit = client.chat.completions.create(
                     model=CURRENT_MODEL, 
                     messages=[{"role": "user", "content": f"Audit this resume for {match['Role']}: {res_raw[:1500]}"}]
@@ -139,8 +150,7 @@ if st.button("RUN ANALYSIS"):
                 st.session_state.messages = []
                 st.rerun()
 
-# --- RESULTS DISPLAY (PERSISTENT) ---
-# --- RESULTS DISPLAY (WITH INTELLIGENT STREAMING) ---
+# --- RESULTS DISPLAY ---
 if st.session_state.analysis_done:
     m = st.session_state.match_data
     ats = st.session_state.ats_score
@@ -155,10 +165,7 @@ if st.session_state.analysis_done:
         col_a.metric("ATS Alignment", f"{round(ats, 1)}%", delta="Optimal", delta_color="normal")
         col_b.success(f"Optimized Career Fit: {m['Role']}")
 
-    # --- THE MAGIC FIX FOR "ROBOTIC" LOADING ---
     st.subheader("🕵️ Senior Recruiter Audit")
-    # If this is the FIRST time we see this audit, stream it. 
-    # If we are just refreshing for the chatbot, show it instantly.
     if "audit_streamed" not in st.session_state:
         st.write_stream(stream_data(st.session_state.audit))
         st.session_state.audit_streamed = True
@@ -171,11 +178,14 @@ if st.session_state.analysis_done:
         st.session_state.roadmap_streamed = True
     else:
         st.markdown(st.session_state.roadmap)
-        
-    # IMPORTANT: In your "RUN ANALYSIS" button block, 
-    # you MUST add these lines to reset the streamers:
-    # if "audit_streamed" in st.session_state: del st.session_state.audit_streamed
-    # if "roadmap_streamed" in st.session_state: del st.session_state.roadmap_streamed
+
+    st.divider()
+    st.subheader("🌐 Live Job Feed (India)")
+    jobs = get_live_jobs(m['Role'])
+    if jobs:
+        for j in jobs: st.markdown(f"✅ **[{j.get('title')}]({j.get('redirect_url')})**")
+    else: st.info("Scanning live market data...")
+
     # --- CHATBOT SECTION ---
     st.divider()
     st.subheader("💬 SkillSync Knowledge Assistant")
