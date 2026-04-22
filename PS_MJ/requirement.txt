@@ -1,0 +1,7 @@
+Streamlit
+Pandas
+Sentence-transformers
+Scikit-learn
+PyPDF2
+Python-docx
+Requests
